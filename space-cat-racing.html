@@ -72,6 +72,11 @@ h1 { font-size: 2.8em; color: #aaccff; letter-spacing: 4px; text-align: center; 
     <p class="subtitle">Race your cat across the cosmos!</p>
     <div class="cat-grid" id="catGrid"></div>
     <div class="option-row">
+      <span class="opt-label">Track:</span>
+      <button class="opt-btn active" id="trackCircuit">Space Circuit</button>
+      <button class="opt-btn" id="trackOval">Lunar Oval</button>
+    </div>
+    <div class="option-row">
       <span class="opt-label">Mode:</span>
       <button class="opt-btn active" id="modeRace">Race</button>
       <button class="opt-btn" id="modePractice">Practice</button>
@@ -130,7 +135,7 @@ const TOTAL_LAPS = 3;
 const CAR_R     = 10;   // car collision radius
 
 // Control points for Catmull-Rom spline (closed loop)
-const CP = [
+const CIRCUIT_CP = [
   {x:720, y:330}, // 0 – start/finish
   {x:790, y:230},
   {x:760, y:125},
@@ -149,6 +154,25 @@ const CP = [
   {x:575, y:572},
   {x:650, y:500},
   {x:700, y:415},
+];
+
+const OVAL_CP = [
+  {x:780, y:325}, // 0 – start/finish (right straight)
+  {x:800, y:225},
+  {x:740, y:120},
+  {x:600, y: 76},
+  {x:450, y: 70},
+  {x:300, y: 76},
+  {x:160, y:120},
+  {x:100, y:225},
+  {x:100, y:325},
+  {x:100, y:425},
+  {x:160, y:530},
+  {x:300, y:574},
+  {x:450, y:580},
+  {x:600, y:574},
+  {x:740, y:530},
+  {x:800, y:425},
 ];
 
 // ── Spline sampling ───────────────────────────────────────────────────────
@@ -170,16 +194,19 @@ function buildSpline(cps, sps = 20) {
   return pts;
 }
 
-const TRACK = buildSpline(CP, 20); // 360 points
-const TN    = TRACK.length;
+let TRACK, TN, ARC, LAP_LEN, trackCanvas;
 
-// Cumulative arc lengths
-const ARC = [0];
-for (let i = 1; i < TN; i++) {
-  const dx = TRACK[i].x - TRACK[i-1].x, dy = TRACK[i].y - TRACK[i-1].y;
-  ARC.push(ARC[i-1] + Math.hypot(dx, dy));
+function setActiveTrack(cp) {
+  TRACK = buildSpline(cp, 20);
+  TN = TRACK.length;
+  ARC = [0];
+  for (let i = 1; i < TN; i++) {
+    const dx = TRACK[i].x - TRACK[i-1].x, dy = TRACK[i].y - TRACK[i-1].y;
+    ARC.push(ARC[i-1] + Math.hypot(dx, dy));
+  }
+  LAP_LEN = ARC[TN-1] + Math.hypot(TRACK[0].x-TRACK[TN-1].x, TRACK[0].y-TRACK[TN-1].y);
+  trackCanvas = buildTrackCanvas();
 }
-const LAP_LEN = ARC[TN-1] + Math.hypot(TRACK[0].x-TRACK[TN-1].x, TRACK[0].y-TRACK[TN-1].y);
 
 // ── Cached track canvas ───────────────────────────────────────────────────
 function buildTrackCanvas() {
@@ -230,7 +257,6 @@ function buildTrackCanvas() {
 
   return tc;
 }
-const trackCanvas = buildTrackCanvas();
 
 // ── Stars & background objects ─────────────────────────────────────────────
 const STARS = Array.from({length:220}, () => ({
@@ -261,6 +287,7 @@ let finishOrder = [];
 let selectedCat = 0;
 let practiceMode = false;
 let difficulty = 'medium';
+let selectedTrack = 'circuit';
 
 // ── Input ──────────────────────────────────────────────────────────────────
 const KEYS = {};
@@ -296,8 +323,7 @@ class Car {
 
     // Racing state
     this.lap = 1;
-    this.passedHalf = false;
-    this.lapDist = 0;          // distance traveled this lap (for ordering)
+    this.lapProgress = 0;      // forward arc distance since last lap crossing
     this.totalDist = 0;        // for race position
     this.finished = false;
     this.finishTime = Infinity;
@@ -369,7 +395,7 @@ class Car {
       if (this.cat.id==='calico' && this.boost<=0 && Math.random()<0.004) this.boost=70;
     }
 
-    if (!racing) { accel=0; steer=0; brake=false; fwd *= 0.82; lat *= 0.82; }
+    if (!racing) { accel=0; steer=0; brake=false; this.vx *= 0.82; this.vy *= 0.82; }
 
     // ── Steer smoothing (gradual, not instant snap) ──
     const steerRate = this.isPlayer ? 0.18 : 0.14;
@@ -426,17 +452,31 @@ class Car {
       const tx=TRACK[near].x, ty=TRACK[near].y;
       const nx=(this.x-tx)/dist, ny=(this.y-ty)/dist;
       this.x = tx + nx*lim; this.y = ty + ny*lim;
-      // Cancel only the wall-normal component; keep tangential so car can slide away
+      // Bounce: remove wall-normal component and add small outward kick
       const dot = this.vx*nx + this.vy*ny;
-      if (dot > 0) { this.vx -= dot*nx; this.vy -= dot*ny; }
-      this.vx *= 0.78; this.vy *= 0.78;
+      if (dot > 0) {
+        this.vx -= 1.35 * dot * nx;   // 1.0 cancels + 0.35 bounces back
+        this.vy -= 1.35 * dot * ny;
+      }
+      this.vx *= 0.92; this.vy *= 0.92;  // light overall damping only
     }
 
     // ── Lap counting ──
     const idx = this.tIdx;
-    if (idx > TN*0.45) this.passedHalf = true;
-    if (idx < TN*0.08 && this.passedHalf) {
-      this.passedHalf = false;
+
+    // Accumulate forward arc distance since last lap crossing.
+    // Using signed arc delta handles both normal driving and the
+    // wrap-around from end-of-track back to index 0.
+    let arcMoved = ARC[idx] - ARC[this.prevTIdx];
+    if (arcMoved < -LAP_LEN * 0.4) arcMoved += LAP_LEN; // wrapped forward past start
+    if (arcMoved >  LAP_LEN * 0.4) arcMoved -= LAP_LEN; // jumped backward (ignore)
+    if (arcMoved > 0) this.lapProgress += arcMoved;
+    this.prevTIdx = idx;
+
+    // Count a lap only when the car is near the start/finish AND has
+    // genuinely driven ≥ 65 % of the circuit forward since the last crossing.
+    if (idx < TN * 0.08 && this.lapProgress > LAP_LEN * 0.65) {
+      this.lapProgress = 0;
       if (this.lap >= TOTAL_LAPS) {
         this.finished = true;
         this.finishTime = raceTime;
@@ -776,6 +816,7 @@ function rollChaos(cat) {
 }
 
 function startRace() {
+  setActiveTrack(selectedTrack === 'oval' ? OVAL_CP : CIRCUIT_CP);
   cars = []; finishOrder = []; raceTime = 0;
 
   const playerType = rollChaos(CAT_TYPES[selectedCat]);
@@ -955,7 +996,17 @@ function loop(ts) {
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────
+setActiveTrack(CIRCUIT_CP);
 buildCatGrid();
+
+function setTrackChoice(t) {
+  selectedTrack = t;
+  document.getElementById('trackCircuit').classList.toggle('active', t==='circuit');
+  document.getElementById('trackOval').classList.toggle('active', t==='oval');
+  setActiveTrack(t === 'oval' ? OVAL_CP : CIRCUIT_CP);
+}
+document.getElementById('trackCircuit').addEventListener('click', () => setTrackChoice('circuit'));
+document.getElementById('trackOval').addEventListener('click', () => setTrackChoice('oval'));
 
 function setMode(isPractice) {
   practiceMode = isPractice;
