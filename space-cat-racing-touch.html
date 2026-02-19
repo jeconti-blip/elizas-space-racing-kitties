@@ -88,6 +88,11 @@ h1 { font-size: 2.8em; color: #aaccff; letter-spacing: 4px; text-align: center; 
       <button class="opt-btn active" id="diffMedium">Medium</button>
       <button class="opt-btn" id="diffHard">Hard</button>
     </div>
+    <div class="option-row">
+      <span class="opt-label">Physics:</span>
+      <button class="opt-btn active" id="physNormal">Normal</button>
+      <button class="opt-btn" id="physLowG">Low G</button>
+    </div>
     <button class="start-btn" id="startBtn">LAUNCH RACE</button>
     <p class="hint">Drag your finger to guide your cat around the track!</p>
   </div>
@@ -289,6 +294,7 @@ let selectedCat = 0;
 let practiceMode = false;
 let difficulty = 'medium';
 let selectedTrack = 'circuit';
+let physicsMode = 'normal';
 
 // ── Touch input ────────────────────────────────────────────────────────────
 const touch = { x: 0, y: 0, active: false };
@@ -862,18 +868,28 @@ function rollChaos(cat) {
     },
   });
 }
+function applyPhysics(cat) {
+  if (physicsMode === 'normal') return cat;
+  // Low G: floaty, drifty, fast — space has no air resistance or traction
+  return Object.assign({}, cat, {
+    drag:     cat.drag     * 0.15,   // barely any slowdown
+    grip:     cat.grip     * 0.20,   // lots of lateral sliding
+    maxSpeed: cat.maxSpeed * 1.35,   // higher top speed
+    accel:    cat.accel    * 1.10,   // slightly punchier launches
+  });
+}
 
 function startRace() {
   setActiveTrack(selectedTrack === 'oval' ? OVAL_CP : CIRCUIT_CP);
   cars = []; finishOrder = []; raceTime = 0;
 
-  const playerType = rollChaos(CAT_TYPES[selectedCat]);
+  const playerType = applyPhysics(rollChaos(CAT_TYPES[selectedCat]));
   playerCar = new Car(playerType, true, 0);
   cars.push(playerCar);
 
   if (!practiceMode) {
     const dm = { easy:{skill:0.60,speed:0.66}, medium:{skill:1,speed:1}, hard:{skill:1.12,speed:1.08} }[difficulty];
-    const aiTypes = CAT_TYPES.filter((_,i)=>i!==selectedCat).map(rollChaos);
+    const aiTypes = CAT_TYPES.filter((_,i)=>i!==selectedCat).map(c => applyPhysics(rollChaos(c)));
     aiTypes.forEach((cat,i) => {
       const ai = new Car(cat, false, i+1);
       ai.aiSkill *= dm.skill;
@@ -1073,6 +1089,13 @@ document.getElementById('modePractice').addEventListener('click', () => setMode(
 document.getElementById('diffEasy').addEventListener('click', () => setDiff('easy'));
 document.getElementById('diffMedium').addEventListener('click', () => setDiff('medium'));
 document.getElementById('diffHard').addEventListener('click', () => setDiff('hard'));
+function setPhysics(m) {
+  physicsMode = m;
+  document.getElementById('physNormal').classList.toggle('active', m === 'normal');
+  document.getElementById('physLowG').classList.toggle('active', m === 'lowg');
+}
+document.getElementById('physNormal').addEventListener('click', () => setPhysics('normal'));
+document.getElementById('physLowG').addEventListener('click', () => setPhysics('lowg'));
 
 document.getElementById('startBtn').addEventListener('click', () => {
   waitFinishScheduled = false;
